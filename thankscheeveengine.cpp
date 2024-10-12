@@ -25,6 +25,8 @@ ThanksCheeveEngine::ThanksCheeveEngine() {
     );
     skipBadges = false;
     connect(achievementChecker, &AchievementChecker::achievementCompleted, this, &ThanksCheeveEngine::achievementCompleted);
+    connect(achievementChecker, &AchievementChecker::achievementPrimed, this, &ThanksCheeveEngine::achievementIPrimed);
+    connect(achievementChecker, &AchievementChecker::achievementUnprimed, this, &ThanksCheeveEngine::achievementIUnprimed);
     setRememberLogin(sqApp->settings()->value("login/RememberLogin").toBool());
     setHardcoreMode(sqApp->settings()->value("general/hardcore").toBool());
     if (m_rememberLogin)
@@ -127,7 +129,10 @@ void ThanksCheeveEngine::setUsb2Snes()
         {
             usb2snesCheckInfoTimer.stop();
             raWebAPIManager->deviceName = infos.secondField;
-            usb2snes->getFile(infos.romPlayed);
+            usb2snes->getAsyncAddress(0xFC0000, 4, USB2snes::CMD);
+            //usb2snes->getAsyncAddress(0xF50000, 4);
+            sInfo() << "Checking for hardcore compatibility";
+            setConnectionStatus(ConnectionStatus::CheckingHardcoreCompatibility);
         } else {
             setConnectionStatus(ConnectionStatus::NoGame);
         }
@@ -137,6 +142,17 @@ void ThanksCheeveEngine::setUsb2Snes()
         usb2snes->infos();
     });
     connect(usb2snes, &USB2snes::fileGet, this, [=] {
+        if (m_connectionStatus == ConnectionStatus::CheckingHardcoreCompatibility)
+        {
+            QString configFile = QString::fromUtf8(usb2snes->getFileData());
+            if (configFile.contains("EnableIngameSavestate: 0"))
+                setHardcoreMode(true && m_hardcoreMode);
+            else
+                setHardcoreMode(false);
+            setConnectionStatus(ConnectionStatus::GettingGame);
+            usb2snes->getFile(usb2snesInfos.romPlayed);
+            return ;
+        }
         QByteArray romData = usb2snes->getFileData();
         if (romData.size() & 512)
             romData = romData.mid(512);
@@ -145,6 +161,12 @@ void ThanksCheeveEngine::setUsb2Snes()
         raWebAPIManager->getGameId(md5);
     });
     connect(usb2snes, &USB2snes::getAddressDataReceived, this, [=] {
+        if (m_connectionStatus == ConnectionStatus::CheckingHardcoreCompatibility)
+        {
+            setHardcoreMode(usb2snes->getAsyncAdressData() == QByteArray::fromHex("00000000"));
+            usb2snes->getFile("/sd2snes/config.yml");
+            return ;
+        }
         achievementChecker->checkAchievements(usb2snes->getAsyncAdressData());
         usb2snes->getAsyncAddress(*achievementChecker->memoriesToCheck());
     });
@@ -240,6 +262,18 @@ void ThanksCheeveEngine::achievementCompleted(unsigned int id)
     if (m_achievements[id]->official)
         raWebAPIManager->awardAchievement(id, m_hardcoreMode);
     emit achievementAchieved(*m_achievements[id]);
+}
+
+void ThanksCheeveEngine::achievementIPrimed(unsigned int id)
+{
+    sInfo() << m_achievements[id]->title << " primed";
+    emit achievementPrimed(*m_achievements[id]);
+}
+
+void ThanksCheeveEngine::achievementIUnprimed(unsigned int id)
+{
+    sInfo() << m_achievements[id]->title << "Unprimed";
+    emit achievementUnprimed(*m_achievements[id]);
 }
 
 void ThanksCheeveEngine::startSession()
